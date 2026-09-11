@@ -9,7 +9,14 @@ function fixture({ failStorage = false } = {}) {
   const sheet = {
     getLastRow: () => rows.length,
     appendRow(row) { if (failStorage) throw Error('Storage unavailable'); rows.push(row); },
-    getRange() { return { createTextFinder(id) { return { matchEntireCell() { return this; }, findNext() { return rows.slice(1).find(r => r[0] === id); } }; } }; }
+    getRange(startRow, startCol, numRows, numCols) {
+      return {
+        createTextFinder(id) { return { matchEntireCell() { return this; }, findNext() { return rows.slice(1).find(r => r[0] === id); } }; },
+        getValues() {
+          return rows.slice(startRow - 1, startRow - 1 + numRows).map(r => r.slice(startCol - 1, startCol - 1 + numCols));
+        }
+      };
+    }
   };
   const context = vm.createContext({
     LockService: { getScriptLock: () => ({ waitLock() { locked = true; }, hasLock: () => locked, releaseLock() { locked = false; } }) },
@@ -27,7 +34,8 @@ function fixture({ failStorage = false } = {}) {
     jabatan: '=DANGEROUS()', jenisAbsensi: 'ABSENSI MASUK', timestamp: 12345, latitude: 1.44, longitude: 125.18,
     foto: Buffer.from('jpeg').toString('base64'), jamMasuk: '07:00:00', jamPulang: '-', tanggal: '11 September 2026' };
   const post = data => JSON.parse(context.doPost({ postData: { contents: JSON.stringify(data) } }).content);
-  return { rows, photos, payload, post, isLocked: () => locked, context };
+  const get = (token) => JSON.parse(context.doGet({ parameter: { token: token } }).content);
+  return { rows, photos, payload, post, get, isLocked: () => locked, context };
 }
 test('persist real photo, preserve NIP, escape formulas, and acknowledge matching ID', () => {
   const f = fixture();
@@ -60,4 +68,24 @@ test('storage error is negative and releases lock', () => {
 test('malformed JSON produces a negative response', () => {
   const f = fixture();
   assert.equal(JSON.parse(f.context.doPost({ postData: { contents: '{' } }).content).success, false);
+});
+test('doGet with wrong or missing token cannot read any data', () => {
+  const f = fixture(); f.post(f.payload);
+  assert.equal(f.get('wrong').success, false);
+  assert.equal(f.get(undefined).success, false);
+});
+test('doGet with correct token returns the combined recap without leaking the token', () => {
+  const f = fixture(); f.post(f.payload);
+  const result = f.get('test-secret');
+  assert.equal(result.success, true);
+  assert.equal(result.records.length, 1);
+  const record = result.records[0];
+  assert.equal(record.recordId, f.payload.recordId);
+  assert.equal(record.nip, f.payload.nip);
+  assert.equal(record.jabatan, f.payload.jabatan);
+  assert.equal(JSON.stringify(result).indexOf('test-secret'), -1);
+});
+test('doGet on an empty sheet returns an empty recap, not an error', () => {
+  const f = fixture();
+  assert.deepEqual(f.get('test-secret'), { success: true, records: [] });
 });

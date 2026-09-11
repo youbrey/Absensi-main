@@ -56,3 +56,38 @@ function sheetText(value) {
 function reply(value) {
   return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON);
 }
+
+/** Read-only recap endpoint: lets the admin export the combined, all-employee recap
+ *  directly from the app, without opening Sheets manually. Auth uses the same shared
+ *  SYNC_TOKEN as doPost, passed as a query parameter (?token=...). Never returns the
+ *  token itself, and never writes anything. */
+function doGet(e) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var token = props.getProperty('SYNC_TOKEN');
+    var requestToken = e && e.parameter ? e.parameter.token : null;
+    if (!token || requestToken !== token) return reply({ success: false, error: 'Unauthorized' });
+    var book = SpreadsheetApp.openById(props.getProperty('SPREADSHEET_ID'));
+    var sheet = book.getSheetByName('Absensi');
+    if (!sheet || sheet.getLastRow() < 2) return reply({ success: true, records: [] });
+    var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).getValues();
+    var records = values.map(function (row) {
+      return {
+        recordId: unwrap(row[0]), namaLengkap: unwrap(row[1]), nip: unwrap(row[2]), jabatan: unwrap(row[3]),
+        jenisAbsensi: unwrap(row[4]), jamMasuk: unwrap(row[5]), jamPulang: unwrap(row[6]), tanggal: unwrap(row[7]),
+        foto: unwrap(row[8]), latitude: row[9], longitude: row[10], timestamp: row[11]
+      };
+    });
+    return reply({ success: true, records: records });
+  } catch (_) {
+    // Do not expose tokens, personal data, or internal spreadsheet identifiers.
+    return reply({ success: false, error: 'Fetch failed' });
+  }
+}
+
+// Defensive: a leading apostrophe forces plain text on write and is not normally part of
+// the stored value, but strip it if present so a mixed-history sheet reads cleanly either way.
+function unwrap(value) {
+  var text = String(value == null ? '' : value);
+  return text.charAt(0) === "'" ? text.slice(1) : text;
+}
