@@ -1,0 +1,6 @@
+{
+  "name": "Absensi DPRD Bitung",
+  "description": "Formulir Absensi Kehadiran Work From Home (WFH) PNS & PPPK Sekretariat DPRD Kota Bitung",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
