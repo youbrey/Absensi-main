@@ -29,6 +29,18 @@ class SyncContractTest {
         assertEquals(record.photoBase64, payload.getString("foto"))
         assertFalse(payload.has("faceVerified"))
     }
+    @Test fun fetchAllRecordsRefusesWithoutValidConfig() = runTest {
+        val originalUrl = GoogleSheetsManager.webhookUrl
+        val originalToken = GoogleSheetsManager.syncToken
+        try {
+            GoogleSheetsManager.webhookUrl = ""
+            GoogleSheetsManager.syncToken = ""
+            assertNull(GoogleSheetsManager.fetchAllRecords())
+            GoogleSheetsManager.webhookUrl = "https://script.google.com/macros/s/abc/exec"
+            GoogleSheetsManager.syncToken = ""
+            assertNull(GoogleSheetsManager.fetchAllRecords())
+        } finally { GoogleSheetsManager.webhookUrl = originalUrl; GoogleSheetsManager.syncToken = originalToken }
+    }
     @Test fun invalidEndpointRemainsUnsynced() = runTest {
         val originalUrl = GoogleSheetsManager.webhookUrl
         try {
