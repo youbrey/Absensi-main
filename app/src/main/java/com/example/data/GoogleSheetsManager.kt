@@ -11,6 +11,23 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
+/** One row of the combined, all-employee recap fetched from Sheets via doGet — not tied to
+ *  any single device's local database. */
+data class RemoteAttendanceRecord(
+    val recordId: String,
+    val namaLengkap: String,
+    val nip: String,
+    val jabatan: String,
+    val jenisAbsensi: String,
+    val jamMasuk: String,
+    val jamPulang: String,
+    val tanggal: String,
+    val fotoUrl: String,
+    val latitude: Double,
+    val longitude: Double,
+    val timestamp: Long
+)
+
 object GoogleSheetsManager {
     var webhookUrl = ""
     var syncToken = ""
@@ -54,5 +71,44 @@ object GoogleSheetsManager {
             }
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) { false }
+    }
+
+    /** Pulls the combined, all-employee recap straight from Sheets (via doGet) so the admin
+     *  never has to open Sheets manually to export a cross-device report.
+     *  Returns null on any failure (bad config, network, auth); an empty list means the
+     *  sheet genuinely has no rows yet. */
+    suspend fun fetchAllRecords(): List<RemoteAttendanceRecord>? = withContext(Dispatchers.IO) {
+        val url = webhookUrl
+        val token = syncToken
+        if (!isValidWebhook(url) || token.isBlank()) return@withContext null
+        try {
+            val getUrl = url.toHttpUrlOrNull()?.newBuilder()?.addQueryParameter("token", token)?.build()
+                ?: return@withContext null
+            val request = Request.Builder().url(getUrl).get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val json = JSONObject(response.body?.string().orEmpty())
+                if (json.optBoolean("success") != true) return@withContext null
+                val array = json.optJSONArray("records") ?: return@withContext emptyList()
+                (0 until array.length()).mapNotNull { i ->
+                    val item = array.optJSONObject(i) ?: return@mapNotNull null
+                    RemoteAttendanceRecord(
+                        recordId = item.optString("recordId"),
+                        namaLengkap = item.optString("namaLengkap"),
+                        nip = item.optString("nip"),
+                        jabatan = item.optString("jabatan"),
+                        jenisAbsensi = item.optString("jenisAbsensi"),
+                        jamMasuk = item.optString("jamMasuk"),
+                        jamPulang = item.optString("jamPulang"),
+                        tanggal = item.optString("tanggal"),
+                        fotoUrl = item.optString("foto"),
+                        latitude = item.optDouble("latitude", 0.0),
+                        longitude = item.optDouble("longitude", 0.0),
+                        timestamp = item.optLong("timestamp", 0L)
+                    )
+                }
+            }
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { null }
     }
 }
