@@ -1,10 +1,6 @@
 name: Verify and Build Android APK
 
 on:
-  push:
-    branches: [main, master, dev, 'feature/**', 'codex/**']
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -28,6 +24,12 @@ jobs:
       - name: Test backend contract
         run: node --test backend/Code.test.cjs
       - name: Test, lint and build
+        # ABSENSI_WEBHOOK_URL / ABSENSI_SYNC_TOKEN are optional repo secrets. If set, the
+        # resulting APK already has Sheets sync configured — no per-device manual entry.
+        # Configure them under Settings > Secrets and variables > Actions if you want this.
+        env:
+          ABSENSI_WEBHOOK_URL: ${{ secrets.ABSENSI_WEBHOOK_URL }}
+          ABSENSI_SYNC_TOKEN: ${{ secrets.ABSENSI_SYNC_TOKEN }}
         run: gradle testDebugUnitTest lintDebug assembleDebug --stacktrace --no-daemon
       - uses: actions/upload-artifact@v4
         if: always()
