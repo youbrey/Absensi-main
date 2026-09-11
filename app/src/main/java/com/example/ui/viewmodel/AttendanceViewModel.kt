@@ -48,8 +48,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val allUsersList = userDao.getAllUsersFlow()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val syncTokenState = MutableStateFlow(prefs.getString("sync_token", "").orEmpty())
-    val webhookUrlState = MutableStateFlow(prefs.getString("webhook_url", "").orEmpty())
+    // A manual override saved in Settings always wins; otherwise fall back to the value
+    // baked into this build via ABSENSI_WEBHOOK_URL / ABSENSI_SYNC_TOKEN (see build.gradle.kts),
+    // so a device needs zero manual setup when the office builds its own APK.
+    val syncTokenState = MutableStateFlow(prefs.getString("sync_token", "").orEmpty().ifBlank { com.example.BuildConfig.SYNC_TOKEN_DEFAULT })
+    val webhookUrlState = MutableStateFlow(prefs.getString("webhook_url", "").orEmpty().ifBlank { com.example.BuildConfig.SYNC_WEBHOOK_URL })
+    val isUsingBuiltInSyncConfig = MutableStateFlow(
+        prefs.getString("webhook_url", "").isNullOrBlank() && com.example.BuildConfig.SYNC_WEBHOOK_URL.isNotBlank()
+    )
     val pushNotificationsEnabled = MutableStateFlow(prefs.getBoolean("push_enabled", false))
     private val _isAdminAuthenticated = MutableStateFlow(false)
     val isAdminAuthenticated = _isAdminAuthenticated.asStateFlow()
@@ -98,10 +104,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     fun saveWebhook(url: String, token: String): Boolean {
         if (!_isAdminAuthenticated.value || (url.isNotBlank() && !GoogleSheetsManager.isValidWebhook(url.trim()))) return false
         if (url.isNotBlank() && token.isBlank()) return false
-        syncTokenState.value = token.trim()
-        GoogleSheetsManager.syncToken = token.trim()
-        webhookUrlState.value = url.trim()
-        GoogleSheetsManager.webhookUrl = url.trim()
+        // Clearing the fields reverts this device to whatever is baked into the build
+        // (if any) instead of leaving sync fully disabled.
+        val effectiveUrl = url.trim().ifBlank { com.example.BuildConfig.SYNC_WEBHOOK_URL }
+        val effectiveToken = token.trim().ifBlank { com.example.BuildConfig.SYNC_TOKEN_DEFAULT }
+        syncTokenState.value = effectiveToken
+        GoogleSheetsManager.syncToken = effectiveToken
+        webhookUrlState.value = effectiveUrl
+        GoogleSheetsManager.webhookUrl = effectiveUrl
+        isUsingBuiltInSyncConfig.value = url.trim().isBlank() && com.example.BuildConfig.SYNC_WEBHOOK_URL.isNotBlank()
         prefs.edit().putString("webhook_url", url.trim()).putString("sync_token", token.trim()).apply()
         return true
     }
@@ -264,6 +275,57 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 ExportUtils.openOrShareFile(getApplication(), file, if (pdf) "application/pdf" else "text/csv")
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { toast("Ekspor gagal: ${e.message}") }
+        }
+    }
+
+    private val _isExportingRekapGabungan = MutableStateFlow(false)
+    val isExportingRekapGabungan = _isExportingRekapGabungan.asStateFlow()
+
+    /** Rekap gabungan semua pegawai dari SEMUA device, ditarik langsung dari Google Sheets
+     *  (via doGet) — admin tidak perlu membuka Sheets manual. Beda dengan exportReportPdf/Csv
+     *  di atas yang hanya membaca database lokal device ini. */
+    fun exportRekapGabunganPdf() = exportRekapGabungan(true)
+    fun exportRekapGabunganCsv() = exportRekapGabungan(false)
+    private fun exportRekapGabungan(pdf: Boolean) {
+        if (!_isAdminAuthenticated.value || _isExportingRekapGabungan.value) return
+        val month = selectedMonthFilter.value
+        viewModelScope.launch {
+            _isExportingRekapGabungan.value = true
+            try {
+                val remote = GoogleSheetsManager.fetchAllRecords()
+                if (remote == null) {
+                    toast("Gagal mengambil rekap dari Google Sheets. Periksa konfigurasi webhook/token dan koneksi internet.")
+                    return@launch
+                }
+                val summaries = remote
+                    .filter { AttendancePolicy.monthLabel(it.timestamp) == month }
+                    .sortedBy { it.timestamp }
+                    .mapIndexed { index, r ->
+                        AttendanceSummary(
+                            id = index.toLong(),
+                            namaLengkap = r.namaLengkap,
+                            nip = r.nip,
+                            jabatan = r.jabatan,
+                            jenisAbsensi = r.jenisAbsensi,
+                            timestamp = r.timestamp,
+                            dateFormatted = r.tanggal,
+                            timeFormatted = r.jamMasuk,
+                            jamMasuk = r.jamMasuk,
+                            jamPulang = r.jamPulang,
+                            locationAddress = if (r.latitude != 0.0 || r.longitude != 0.0) "${r.latitude}, ${r.longitude}" else "-",
+                            hasPhoto = r.fotoUrl.isNotBlank(),
+                            isSyncedToSheets = true
+                        )
+                    }
+                val label = "$month (Gabungan Semua Pegawai)"
+                val file = withContext(Dispatchers.IO) {
+                    if (pdf) ExportUtils.exportToPdf(getApplication(), label, summaries)
+                    else ExportUtils.exportToExcelCsv(getApplication(), label, summaries)
+                }
+                ExportUtils.openOrShareFile(getApplication(), file, if (pdf) "application/pdf" else "text/csv")
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { toast("Ekspor rekap gabungan gagal: ${e.message}") }
+            finally { _isExportingRekapGabungan.value = false }
         }
     }
 
