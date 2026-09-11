@@ -219,6 +219,54 @@ fun AdminDashboardScreen(
                 Text("Ekspor Excel", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
         }
+        Text(
+            text = "Tombol di atas hanya ekspor data lokal HP ini. Untuk rekap SEMUA pegawai dari SEMUA device, gunakan tombol di bawah:",
+            fontSize = 10.sp,
+            color = Color(0xFF64748B)
+        )
+
+        // Action Buttons Bar: Rekap Gabungan Semua Pegawai (ditarik dari Google Sheets, bukan DB lokal)
+        val isExportingRekapGabungan by viewModel.isExportingRekapGabungan.collectAsState()
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Button(
+                onClick = { viewModel.exportRekapGabunganPdf() },
+                enabled = !isExportingRekapGabungan,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7C3AED))
+            ) {
+                if (isExportingRekapGabungan) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Default.CloudDownload, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Rekap Gabungan PDF", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Button(
+                onClick = { viewModel.exportRekapGabunganCsv() },
+                enabled = !isExportingRekapGabungan,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(48.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0EA5E9))
+            ) {
+                if (isExportingRekapGabungan) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Default.CloudDownload, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Rekap Gabungan Excel", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
 
         // Search Field
         OutlinedTextField(

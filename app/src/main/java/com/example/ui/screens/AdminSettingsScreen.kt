@@ -260,6 +260,26 @@ fun AdminSettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
+                val usingBuiltIn by viewModel.isUsingBuiltInSyncConfig.collectAsState()
+                if (usingBuiltIn) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFFECFDF5))
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF059669), modifier = Modifier.size(16.dp))
+                        Text(
+                            "Memakai konfigurasi bawaan dari build ini. Isi kolom di bawah hanya jika perlu override manual.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF065F46)
+                        )
+                    }
+                }
+
                 OutlinedTextField(
                     value = webhookInput,
                     onValueChange = {
