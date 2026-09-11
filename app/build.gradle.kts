@@ -16,6 +16,14 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    // Baked-in Sheets sync config: set via env vars (CI secrets) at build time so every
+    // APK from this build already has the office's webhook configured — no per-device
+    // manual entry needed. Left blank here (and blank if the env vars aren't set), the
+    // app falls back to the manual fields in Admin > Pengaturan. Never hardcode real
+    // secrets directly in this file; use ABSENSI_WEBHOOK_URL / ABSENSI_SYNC_TOKEN env vars.
+    buildConfigField("String", "SYNC_WEBHOOK_URL", "\"${System.getenv("ABSENSI_WEBHOOK_URL") ?: ""}\"")
+    buildConfigField("String", "SYNC_TOKEN_DEFAULT", "\"${System.getenv("ABSENSI_SYNC_TOKEN") ?: ""}\"")
   }
 
   signingConfigs {
