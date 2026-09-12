@@ -51,4 +51,22 @@ class SyncContractTest {
         assertFalse(GoogleSheetsManager.isValidWebhook("https://evil.example/macros/s/abc/exec"))
         assertTrue(GoogleSheetsManager.isValidWebhook("https://script.google.com/macros/s/abc/exec"))
     }
+    @Test fun failuresExposeARealReasonInsteadOfSilentFalse() = runTest {
+        val originalUrl = GoogleSheetsManager.webhookUrl
+        val originalToken = GoogleSheetsManager.syncToken
+        try {
+            // Blank webhook: must name the actual missing piece, not just fail silently.
+            GoogleSheetsManager.webhookUrl = ""
+            GoogleSheetsManager.syncToken = ""
+            GoogleSheetsManager.syncAttendanceRecord(record)
+            assertNotNull(GoogleSheetsManager.lastSyncError)
+            assertTrue(GoogleSheetsManager.lastSyncError!!.contains("webhook", ignoreCase = true))
+
+            // Valid-looking URL but blank token: a different reason must be reported.
+            GoogleSheetsManager.webhookUrl = "https://script.google.com/macros/s/abc/exec"
+            GoogleSheetsManager.syncToken = ""
+            GoogleSheetsManager.syncAttendanceRecord(record)
+            assertTrue(GoogleSheetsManager.lastSyncError!!.contains("token", ignoreCase = true))
+        } finally { GoogleSheetsManager.webhookUrl = originalUrl; GoogleSheetsManager.syncToken = originalToken }
+    }
 }
