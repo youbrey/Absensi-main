@@ -180,7 +180,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         photoBase64.value = base64
     }
 
-    fun submitAttendance(onSuccess: (Boolean) -> Unit, onError: (String) -> Unit) {
+    fun submitAttendance(onSuccess: (Boolean, String?) -> Unit, onError: (String) -> Unit) {
         if (_isSubmitting.value) return
         _isSubmitting.value = true
         // Snapshot inputs before any suspension so a camera/profile change cannot mix records.
@@ -233,7 +233,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     } catch (e: CancellationException) { throw e }
                     catch (_: Exception) { false }
                 }
-                onSuccess(synced)
+                onSuccess(synced, if (synced) null else GoogleSheetsManager.lastSyncError)
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { onError(e.message ?: "Gagal menyimpan absensi") }
             finally { _isSubmitting.value = false }
@@ -253,7 +253,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             attendanceDao.markSynced(item.id); success++
                         }
                     }
-                    toast("$success tersinkron; ${list.size - success} masih tersimpan lokal")
+                    val failed = list.size - success
+                    toast(
+                        if (failed == 0) "$success tersinkron; semua data lokal berhasil dikirim"
+                        else "$success tersinkron; $failed masih tersimpan lokal — sebab: ${GoogleSheetsManager.lastSyncError ?: "tidak diketahui"}"
+                    )
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { toast("Sinkronisasi gagal. Data lokal tetap tersimpan.") }
             }
@@ -294,7 +298,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             try {
                 val remote = GoogleSheetsManager.fetchAllRecords()
                 if (remote == null) {
-                    toast("Gagal mengambil rekap dari Google Sheets. Periksa konfigurasi webhook/token dan koneksi internet.")
+                    toast("Gagal mengambil rekap dari Google Sheets: ${GoogleSheetsManager.lastSyncError ?: "alasan tidak diketahui"}")
                     return@launch
                 }
                 val summaries = remote
