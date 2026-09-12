@@ -339,10 +339,11 @@ fun UserFormScreen(
         Button(
             onClick = {
                 viewModel.submitAttendance(
-                    onSuccess = { synced ->
+                    onSuccess = { synced, errorDetail ->
                         Toast.makeText(
                             context,
-                            if (synced) "Absensi tersimpan lokal dan telah diterima Google Sheets." else "Absensi tersimpan lokal. Sinkronisasi Google Sheets masih tertunda.",
+                            if (synced) "Absensi tersimpan lokal dan telah diterima Google Sheets."
+                            else "Absensi tersimpan lokal. Sinkronisasi tertunda: ${errorDetail ?: "alasan tidak diketahui"}",
                             Toast.LENGTH_LONG
                         ).show()
                     },
