@@ -52,9 +52,6 @@ interface UserDao {
     @Query("SELECT * FROM users WHERE nip = :nip LIMIT 1")
     suspend fun getUserByNip(nip: String): UserEntity?
 
-    @Query("SELECT COUNT(*) FROM users WHERE role = 'ADMIN' AND isActive = 1 AND pinCode LIKE 'pbkdf2:%'")
-    suspend fun getConfiguredAdminCount(): Int
-
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertUser(user: UserEntity): Long
 
