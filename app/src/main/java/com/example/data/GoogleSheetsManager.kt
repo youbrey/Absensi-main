@@ -1,5 +1,6 @@
 package com.example.data
 
+import com.example.util.TrustedTime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -27,6 +28,15 @@ data class RemoteAttendanceRecord(
     val longitude: Double,
     val timestamp: Long
 )
+
+/** Result of a server-verified admin login (action: "adminLogin"). The password is checked
+ *  entirely server-side against Script Properties -- see backend/Code.gs -- so this client
+ *  never has, stores, or compares against any admin credential itself. */
+sealed class AdminLoginResult {
+    data class Success(val nip: String, val name: String) : AdminLoginResult()
+    data class Rejected(val message: String) : AdminLoginResult()
+    data class NetworkFailure(val message: String) : AdminLoginResult()
+}
 
 object GoogleSheetsManager {
     var webhookUrl = ""
@@ -71,6 +81,17 @@ object GoogleSheetsManager {
             json.optString("recordId") == recordId
     } catch (_: Exception) { false }
 
+    // Every reply() on the backend carries the server's own clock reading (see Code.gs) --
+    // success or failure, it doesn't matter, the time itself isn't sensitive. Capturing it
+    // here means TrustedTime's anchor gets refreshed for free on every round-trip this object
+    // makes (sync, recap fetch, admin login), not just the dedicated fetchServerTime() ping.
+    private fun captureServerTime(body: String) {
+        try {
+            val t = JSONObject(body).optLong("serverTime", -1L)
+            if (t > 0) TrustedTime.recordAnchor(t)
+        } catch (_: Exception) { /* not JSON, e.g. a redirect/login page -- nothing to capture */ }
+    }
+
     suspend fun syncAttendanceRecord(record: AttendanceEntity): Boolean = withContext(Dispatchers.IO) {
         val url = webhookUrl
         val token = syncToken
@@ -82,6 +103,7 @@ object GoogleSheetsManager {
                 .post(payload(record).put("token", token).toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
+                captureServerTime(body)
                 val ok = isAcknowledged(response.code, body, record.encryptedHash)
                 if (!ok) {
                     lastSyncError = "HTTP ${response.code}, respons: ${body.take(300)}"
@@ -112,6 +134,7 @@ object GoogleSheetsManager {
             val request = Request.Builder().url(getUrl).get().build()
             client.newCall(request).execute().use { response ->
                 val bodyText = response.body?.string().orEmpty()
+                captureServerTime(bodyText)
                 if (!response.isSuccessful) {
                     lastSyncError = "HTTP ${response.code}, respons: ${bodyText.take(300)}"
                     return@withContext null
@@ -146,5 +169,59 @@ object GoogleSheetsManager {
             lastSyncError = "${e.javaClass.simpleName}: ${e.message}"
             null
         }
+    }
+
+    /** Server-verified admin login. Sends NIP+password to the SAME Apps Script deployment
+     *  used for sync (action: "adminLogin"); the server checks it against Script Properties
+     *  and returns only success/failure + a display name -- never a token or hash the app
+     *  could reuse or leak. No SYNC_TOKEN is sent: unlike that token, the admin password is
+     *  never baked into the APK, so it doesn't need a second shared secret to protect it. */
+    suspend fun adminLogin(nip: String, password: String): AdminLoginResult = withContext(Dispatchers.IO) {
+        val url = webhookUrl
+        if (!isValidWebhook(url)) return@withContext AdminLoginResult.NetworkFailure("URL server belum dikonfigurasi")
+        try {
+            val body = JSONObject().apply {
+                put("action", "adminLogin")
+                put("nip", nip)
+                put("password", password)
+            }.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+            val request = Request.Builder().url(url).post(body).build()
+            client.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                captureServerTime(text)
+                if (!response.isSuccessful) return@use AdminLoginResult.NetworkFailure("HTTP ${response.code}")
+                val json = JSONObject(text)
+                if (json.optBoolean("success")) {
+                    AdminLoginResult.Success(json.optString("nip", nip), json.optString("name", "Administrator"))
+                } else {
+                    AdminLoginResult.Rejected(json.optString("error", "Login ditolak"))
+                }
+            }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) {
+            // Never include `password` here -- this message can surface in a Toast/UI banner.
+            AdminLoginResult.NetworkFailure("${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    /** Fetches only the server's current clock reading (doGet ?action=time, no token needed --
+     *  see Code.gs) and, on success, feeds it to TrustedTime.recordAnchor so the app has a
+     *  real, device-clock-independent "now" available before the very first attendance
+     *  submission. Returns the raw serverTime in ms, or null on any failure. */
+    suspend fun fetchServerTime(): Long? = withContext(Dispatchers.IO) {
+        val url = webhookUrl
+        if (!isValidWebhook(url)) return@withContext null
+        try {
+            val getUrl = url.toHttpUrlOrNull()?.newBuilder()?.addQueryParameter("action", "time")?.build()
+                ?: return@withContext null
+            val request = Request.Builder().url(getUrl).get().build()
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                captureServerTime(body)
+                if (!response.isSuccessful) return@use null
+                JSONObject(body).optLong("serverTime", -1L).takeIf { it > 0 }
+            }
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { null }
     }
 }
