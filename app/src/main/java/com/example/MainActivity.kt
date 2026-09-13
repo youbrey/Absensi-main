@@ -38,13 +38,37 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: AttendanceViewModel by viewModels()
 
+    // Android 13+ (API 33) requires this runtime permission before ANY notification --
+    // including the daily attendance reminder -- can actually be shown. Previously this
+    // was only requested from inside AdminSettingsScreen, which a regular employee never
+    // opens, so the reminder silently never appeared for anyone but the admin's own
+    // device. Requesting it here, once, for every user on first launch is what makes the
+    // "on by default" reminder in AttendanceViewModel actually reach employees' phones.
+    private val notificationPermissionLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { /* No extra action needed either way: showAbsensiReminder() already checks the
+           permission itself and skips gracefully if it was denied. */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                this, android.Manifest.permission.POST_NOTIFICATIONS
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+
         setContent {
             MyApplicationTheme {
-                MainAppStructure(viewModel)
+                var showSplash by remember { mutableStateOf(true) }
+                if (showSplash) {
+                    com.example.ui.screens.SplashScreen(onFinished = { showSplash = false })
+                } else {
+                    MainAppStructure(viewModel)
+                }
             }
         }
     }
