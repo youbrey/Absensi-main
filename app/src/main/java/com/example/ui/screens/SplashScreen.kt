@@ -32,11 +32,14 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
 import com.example.R
 import kotlinx.coroutines.delay
 
@@ -57,6 +60,17 @@ fun SplashScreen(
     onFinished: () -> Unit,
     totalDurationMs: Long = 2000L
 ) {
+    // R.mipmap.ic_launcher_round resolves to an <adaptive-icon> XML resource on API 26+,
+    // which painterResource() explicitly rejects ("Only VectorDrawables and rasterized
+    // asset types are supported"). Going through the platform Drawable APIs instead
+    // renders the adaptive icon correctly, then we hand Compose a plain bitmap.
+    val context = LocalContext.current
+    val appIconBitmap = remember {
+        ContextCompat.getDrawable(context, R.mipmap.ic_launcher_round)
+            ?.toBitmap(width = 256, height = 256)
+            ?.asImageBitmap()
+    }
+
     val iconScale = remember { Animatable(0.5f) }
     val iconAlpha = remember { Animatable(0f) }
     val textAlpha = remember { Animatable(0f) }
@@ -126,15 +140,28 @@ fun SplashScreen(
                         .clip(CircleShape)
                         .background(SplashGold)
                 )
-                Image(
-                    painter = painterResource(id = R.mipmap.ic_launcher_round),
-                    contentDescription = "Absensi WFH DPRD Bitung",
-                    modifier = Modifier
-                        .size(112.dp)
-                        .scale(iconScale.value)
-                        .alpha(iconAlpha.value)
-                        .clip(CircleShape)
-                )
+                if (appIconBitmap != null) {
+                    Image(
+                        bitmap = appIconBitmap,
+                        contentDescription = "Absensi WFH DPRD Bitung",
+                        modifier = Modifier
+                            .size(112.dp)
+                            .scale(iconScale.value)
+                            .alpha(iconAlpha.value)
+                            .clip(CircleShape)
+                    )
+                } else {
+                    // Defensive fallback so a resource-loading hiccup on some device never
+                    // crashes the splash -- just show the plain color instead of the icon.
+                    Box(
+                        modifier = Modifier
+                            .size(112.dp)
+                            .scale(iconScale.value)
+                            .alpha(iconAlpha.value)
+                            .clip(CircleShape)
+                            .background(SplashGold)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(24.dp))
