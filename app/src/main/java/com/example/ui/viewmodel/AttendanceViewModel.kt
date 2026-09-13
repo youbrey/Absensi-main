@@ -56,7 +56,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     val isUsingBuiltInSyncConfig = MutableStateFlow(
         prefs.getString("webhook_url", "").isNullOrBlank() && com.example.BuildConfig.SYNC_WEBHOOK_URL.isNotBlank()
     )
-    val pushNotificationsEnabled = MutableStateFlow(prefs.getBoolean("push_enabled", false))
+    // Defaults to ON: the goal is every employee who installs the app gets reminded on
+    // their own device automatically, without needing an admin to visit Settings on that
+    // specific phone first (this flag lives in per-device SharedPreferences, so there is
+    // no way to flip it centrally for everyone -- opting everyone in by default is the
+    // only way a per-device flag can reach "seluruh pegawai" without real push infra).
+    // The admin toggle in Settings still exists as a per-device override/kill switch.
+    val pushNotificationsEnabled = MutableStateFlow(prefs.getBoolean("push_enabled", true))
     private val _isAdminAuthenticated = MutableStateFlow(false)
     val isAdminAuthenticated = _isAdminAuthenticated.asStateFlow()
     // Identifies the currently-authenticated admin by NIP rather than a local Room id: admin
@@ -81,6 +87,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         GoogleSheetsManager.webhookUrl = webhookUrlState.value
         GoogleSheetsManager.syncToken = syncTokenState.value
         TrustedTime.init(application)
+        // Persist the resolved default (rather than leaving it implicit) so this and
+        // ReminderReceiver's own SharedPreferences read can never silently disagree again
+        // if either fallback literal is ever changed on its own in the future.
+        if (!prefs.contains("push_enabled")) {
+            prefs.edit().putBoolean("push_enabled", pushNotificationsEnabled.value).apply()
+        }
         NotificationHelper.scheduleReminders(application, pushNotificationsEnabled.value)
         refreshGpsLocation()
     }
