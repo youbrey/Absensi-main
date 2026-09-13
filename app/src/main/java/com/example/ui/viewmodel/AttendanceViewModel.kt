@@ -59,8 +59,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     val pushNotificationsEnabled = MutableStateFlow(prefs.getBoolean("push_enabled", false))
     private val _isAdminAuthenticated = MutableStateFlow(false)
     val isAdminAuthenticated = _isAdminAuthenticated.asStateFlow()
-    val needsAdminSetup = MutableStateFlow(false)
-    private var authenticatedAdminId: Long? = null
+    // Identifies the currently-authenticated admin by NIP rather than a local Room id: admin
+    // identity now lives entirely on the server (see loginAdmin below), so there is not
+    // necessarily any local UserEntity row corresponding to it.
+    private var authenticatedAdminNip: String? = null
     private var failedLoginAttempts = 0
     private var loginBlockedUntil = 0L
 
@@ -75,22 +77,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // Call while holding authMutex so concurrent taps share one attempt limit.
-    // Admin-only: regular attendance no longer requires any account or password.
-    private suspend fun authenticateAdmin(username: String, password: String): UserEntity {
-        checkLoginAllowed()
-        val user = userDao.getUserByNip(username)
-        val valid = user != null && user.isActive && user.role == "ADMIN" &&
-            withContext(Dispatchers.Default) { PasswordHasher.verify(password, user.pinCode) }
-        recordLoginResult(valid)
-        require(valid) { "NIP atau kata sandi tidak sesuai, atau akun admin tidak aktif" }
-        return requireNotNull(user)
-    }
-
     init {
         GoogleSheetsManager.webhookUrl = webhookUrlState.value
         GoogleSheetsManager.syncToken = syncTokenState.value
-        viewModelScope.launch { needsAdminSetup.value = userDao.getConfiguredAdminCount() == 0 }
+        TrustedTime.init(application)
         NotificationHelper.scheduleReminders(application, pushNotificationsEnabled.value)
         refreshGpsLocation()
     }
@@ -124,31 +114,34 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         NotificationHelper.scheduleReminders(getApplication(), enabled)
     }
 
+    // Admin identity and credentials live entirely on the server (see backend/Code.gs,
+    // action: "adminLogin") -- there is deliberately no path here that reads or writes a
+    // local Room "admin" account, and no bootstrap branch that lets a fresh install create
+    // one. Removing that branch was the actual fix for the "any device can make itself
+    // admin" bug; everything else here just wires the server's answer into the session.
     fun loginAdmin(username: String, password: String, onResult: (String?) -> Unit) {
         viewModelScope.launch {
             val error = authMutex.withLock {
                 try {
                     checkLoginAllowed()
-                    if (userDao.getConfiguredAdminCount() == 0) {
-                        require(username.isNotBlank()) { "Isi NIP admin pertama" }
-                        val hashed = withContext(Dispatchers.Default) { PasswordHasher.hash(password) }
-                        db.withTransaction {
-                            require(userDao.getConfiguredAdminCount() == 0) { "Admin sudah disiapkan. Silakan login." }
-                            val existing = userDao.getUserByNip(username)
-                            if (existing == null) {
-                                userDao.insertUser(UserEntity(namaLengkap = "Administrator", nip = username,
-                                    jabatan = "Administrator", tipePegawai = "PNS", role = "ADMIN", pinCode = hashed))
-                            } else {
-                                // Explicit first-device provisioning / recovery from the former shared default PIN.
-                                userDao.updateUser(existing.copy(role = "ADMIN", pinCode = hashed, isActive = true))
-                            }
+                    require(username.isNotBlank() && password.isNotBlank()) { "NIP dan kata sandi admin wajib diisi" }
+                    when (val result = GoogleSheetsManager.adminLogin(username.trim(), password)) {
+                        is AdminLoginResult.Success -> {
+                            recordLoginResult(true)
+                            authenticatedAdminNip = result.nip
+                            _isAdminAuthenticated.value = true
+                            null
+                        }
+                        is AdminLoginResult.Rejected -> {
+                            recordLoginResult(false)
+                            result.message
+                        }
+                        is AdminLoginResult.NetworkFailure -> {
+                            // A connectivity/config problem is not a wrong password -- don't
+                            // burn the attempt budget for it.
+                            "Tidak dapat menghubungi server: ${result.message}"
                         }
                     }
-                    val admin = authenticateAdmin(username, password)
-                    authenticatedAdminId = admin.id
-                    _isAdminAuthenticated.value = true
-                    needsAdminSetup.value = false
-                    null
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) { e.message ?: "Login gagal" }
             }
@@ -157,7 +150,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun logoutAdmin() {
-        authenticatedAdminId = null
+        authenticatedAdminNip = null
         _isAdminAuthenticated.value = false
         currentTab.value = 0
     }
@@ -203,7 +196,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 _locationState.value = loc
                 require(loc.isAvailable) { loc.address }
                 require(loc.isWithinBitungArea) { "Lokasi berada di luar radius WFH yang diizinkan (35 km)" }
-                val now = System.currentTimeMillis()
+                // The device's own system clock (Settings > Date & time) is user-editable and
+                // must never decide whether a submission falls inside the attendance window --
+                // that was exactly the bug this closes (change the clock, submit anytime).
+                // TrustedTime anchors real time to our own server via a monotonic per-boot
+                // counter the user cannot edit, so changing the phone's date/time no longer
+                // changes what "now" means here. If no trusted time can be established at all
+                // (e.g. never been online since the last reboot), the submission is refused
+                // rather than silently falling back to the spoofable system clock.
+                val now = TrustedTime.ensureFreshOrNull()
+                    ?: throw IllegalStateException("Tidak dapat memverifikasi waktu perangkat. Sambungkan ke internet, lalu coba lagi.")
                 val mode = _scheduleMode.value
                 require(mode != ScheduleMode.FORCE_LOCKED && (mode == ScheduleMode.FORCE_OPEN ||
                     AttendancePolicy.window(now) == kind.removePrefix("ABSENSI "))) { "Jadwal untuk jenis absensi ini sedang ditutup" }
@@ -333,26 +335,21 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun saveNewUser(nama: String, nipInput: String, jabatanInput: String, tipe: String, role: String,
-                    password: String, onResult: (String?) -> Unit) {
+    // Employees added here are always plain USER records (attendance only, no login/password).
+    // There is intentionally no ADMIN option and no password field: admin accounts are
+    // configured only on the server (setupAdminAccount() in backend/Code.gs), never from
+    // inside the app -- that is the whole point of this fix. See docs/AUDIT.md.
+    fun saveNewUser(nama: String, nipInput: String, jabatanInput: String, tipe: String,
+                    onResult: (String?) -> Unit) {
         if (!_isAdminAuthenticated.value) { onResult("Login admin diperlukan"); return }
         viewModelScope.launch {
             try {
                 require(nama.isNotBlank() && nipInput.isNotBlank() && jabatanInput.isNotBlank()) { "Lengkapi nama, NIP, dan jabatan" }
-                require(role in listOf("ADMIN", "USER") && tipe in listOf("PNS", "PPPK")) { "Peran atau tipe pegawai tidak valid" }
-                // Only ADMIN accounts authenticate with a password (to unlock Monitoring, Hak
-                // Akses, and Pengaturan / mode pembatasan waktu finger). Regular USER employees
-                // attend without any login, so their password is left blank/unused.
-                require(role != "ADMIN" || password.length >= 8) { "Kata sandi admin minimal 8 karakter" }
-                // hash() enforces a minimum length, so only ever call it for ADMIN accounts —
-                // USER accounts simply keep the default blank pinCode (no password, no login).
-                val hash = if (role == "ADMIN") {
-                    withContext(Dispatchers.Default) { PasswordHasher.hash(password) }
-                } else ""
+                require(tipe in listOf("PNS", "PPPK")) { "Tipe pegawai tidak valid" }
                 db.withTransaction {
                     require(userDao.getUserByNip(nipInput.trim()) == null) { "NIP sudah terdaftar" }
                     userDao.insertUser(UserEntity(namaLengkap = nama.trim(), nip = nipInput.trim(), jabatan = jabatanInput.trim(),
-                        tipePegawai = tipe, role = role, pinCode = hash))
+                        tipePegawai = tipe, role = "USER", pinCode = ""))
                 }
                 onResult(null)
             } catch (e: CancellationException) { throw e }
@@ -360,26 +357,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun resetUserPassword(user: UserEntity, password: String, onResult: (String?) -> Unit) {
-        if (!_isAdminAuthenticated.value) { onResult("Login admin diperlukan"); return }
-        viewModelScope.launch {
-            try {
-                val hash = withContext(Dispatchers.Default) { PasswordHasher.hash(password) }
-                db.withTransaction {
-                    val fresh = userDao.getUserByNip(user.nip) ?: error("Pengguna tidak ditemukan")
-                    userDao.updateUser(fresh.copy(pinCode = hash))
-                }
-                onResult(null)
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { onResult(e.message ?: "Gagal mengubah kata sandi") }
-        }
-    }
-
     fun toggleUserActiveState(user: UserEntity) {
         if (!_isAdminAuthenticated.value) return
         viewModelScope.launch {
             try {
-                require(user.id != authenticatedAdminId) { "Tidak dapat menonaktifkan akun admin yang sedang digunakan" }
+                require(user.nip != authenticatedAdminNip) { "Tidak dapat menonaktifkan akun admin yang sedang digunakan" }
                 userDao.updateUser(user.copy(isActive = !user.isActive))
                 if (_currentUser.value?.id == user.id) _currentUser.value = null
             } catch (e: CancellationException) { throw e }
