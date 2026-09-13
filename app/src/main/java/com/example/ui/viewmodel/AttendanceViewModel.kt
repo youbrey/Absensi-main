@@ -207,8 +207,28 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val now = TrustedTime.ensureFreshOrNull()
                     ?: throw IllegalStateException("Tidak dapat memverifikasi waktu perangkat. Sambungkan ke internet, lalu coba lagi.")
                 val mode = _scheduleMode.value
-                require(mode != ScheduleMode.FORCE_LOCKED && (mode == ScheduleMode.FORCE_OPEN ||
-                    AttendancePolicy.window(now) == kind.removePrefix("ABSENSI "))) { "Jadwal untuk jenis absensi ini sedang ditutup" }
+                val windowOpen = mode != ScheduleMode.FORCE_LOCKED &&
+                    (mode == ScheduleMode.FORCE_OPEN || AttendancePolicy.window(now) == kind.removePrefix("ABSENSI "))
+                if (!windowOpen) {
+                    // `now` is TrustedTime's server-anchored value -- immune to Settings > Date
+                    // & time changes. System.currentTimeMillis() still reflects whatever the
+                    // device's own clock says. A large gap between the two means the device
+                    // clock has been changed manually; that mismatch is what TrustedTime exists
+                    // to catch, independent of whether the *real* time also happens to fall
+                    // outside the attendance window.
+                    val deviceClockMs = System.currentTimeMillis()
+                    val driftMs = kotlin.math.abs(deviceClockMs - now)
+                    val clockTamperThresholdMs = 5 * 60 * 1000L // 5 minutes: generous vs. normal drift
+                    val message = if (driftMs > clockTamperThresholdMs) {
+                        val driftMinutes = driftMs / 60000
+                        "Jam pada perangkat ini terpaut sekitar $driftMinutes menit dari waktu server " +
+                            "-- terindikasi diubah manual. Absensi ditolak untuk mencegah manipulasi waktu. " +
+                            "Aktifkan \"Tanggal & waktu otomatis\" di pengaturan perangkat, lalu coba lagi."
+                    } else {
+                        "Jadwal untuk jenis absensi ini sedang ditutup"
+                    }
+                    throw IllegalStateException(message)
+                }
                 val time = AttendancePolicy.format("HH:mm:ss", now)
                 val record = AttendanceEntity(namaLengkap = inputNama, nip = inputNip, jabatan = inputJabatan,
                     jenisAbsensi = kind, timestamp = now, dateFormatted = AttendancePolicy.format("EEEE, d MMMM yyyy", now),
