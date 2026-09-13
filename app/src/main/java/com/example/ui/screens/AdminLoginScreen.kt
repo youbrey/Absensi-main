@@ -35,7 +35,6 @@ fun AdminLoginScreen(
     onBackToUserForm: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    val needsSetup by viewModel.needsAdminSetup.collectAsState()
     val focusManager = LocalFocusManager.current
 
     var usernameInput by remember { mutableStateOf("") }
@@ -241,7 +240,7 @@ fun AdminLoginScreen(
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = if (needsSetup) "Penyiapan perangkat: masukkan NIP dan kata sandi baru (minimal 8 karakter) untuk membuat admin pertama." else "Masuk menggunakan NIP dan kata sandi admin yang telah didaftarkan.",
+                                text = "Masuk menggunakan NIP dan kata sandi admin yang telah didaftarkan oleh IT di server.",
                                 fontSize = 11.sp,
                                 color = Color(0xFF334155),
                                 lineHeight = 15.sp
@@ -278,7 +277,7 @@ fun AdminLoginScreen(
                                     tint = Color(0xFFF59E0B)
                                 )
                                 Text(
-                                    text = if (needsSetup) "BUAT ADMIN PERTAMA" else "MASUK SEBAGAI ADMIN",
+                                    text = "MASUK SEBAGAI ADMIN",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp,
                                     color = Color.White

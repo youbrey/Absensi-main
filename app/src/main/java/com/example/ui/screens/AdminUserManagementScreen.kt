@@ -30,10 +30,6 @@ fun AdminUserManagementScreen(
     val context = LocalContext.current
     val allUsers by viewModel.allUsersList.collectAsState()
 
-    var passwordUser by remember { mutableStateOf<UserEntity?>(null) }
-    var passwordInput by remember { mutableStateOf("") }
-    var passwordError by remember { mutableStateOf<String?>(null) }
-    var resetting by remember { mutableStateOf(false) }
     var showAddUserDialog by remember { mutableStateOf(false) }
 
     Column(
@@ -130,39 +126,17 @@ fun AdminUserManagementScreen(
             items(allUsers) { user ->
                 UserPrivilegeCard(
                     user = user,
-                    onToggleActive = { viewModel.toggleUserActiveState(user) },
-                    onResetPassword = if (user.role == "ADMIN") {
-                        { passwordUser = user; passwordInput = ""; passwordError = null }
-                    } else null
+                    onToggleActive = { viewModel.toggleUserActiveState(user) }
                 )
             }
         }
     }
 
-    passwordUser?.let { user ->
-        AlertDialog(onDismissRequest = { if (!resetting) passwordUser = null },
-            title = { Text("Atur kata sandi ${user.namaLengkap}") },
-            text = { Column {
-                OutlinedTextField(value = passwordInput, onValueChange = { passwordInput = it },
-                    label = { Text("Kata sandi baru (minimal 8 karakter)") }, singleLine = true,
-                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation())
-                passwordError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            } },
-            confirmButton = { TextButton(enabled = !resetting, onClick = {
-                resetting = true
-                viewModel.resetUserPassword(user, passwordInput) { error ->
-                    resetting = false; passwordError = error
-                    if (error == null) passwordUser = null
-                }
-            }) { Text("Simpan") } },
-            dismissButton = { TextButton(enabled = !resetting, onClick = { passwordUser = null }) { Text("Batal") } })
-    }
-
     if (showAddUserDialog) {
         AddUserDialog(
             onDismiss = { showAddUserDialog = false },
-            onSave = { nama, nip, jabatan, tipe, role, password, onResult ->
-                viewModel.saveNewUser(nama, nip, jabatan, tipe, role, password) { error ->
+            onSave = { nama, nip, jabatan, tipe, onResult ->
+                viewModel.saveNewUser(nama, nip, jabatan, tipe) { error ->
                     onResult(error)
                     if (error == null) showAddUserDialog = false
                 }
@@ -174,8 +148,7 @@ fun AdminUserManagementScreen(
 @Composable
 fun UserPrivilegeCard(
     user: UserEntity,
-    onToggleActive: () -> Unit,
-    onResetPassword: (() -> Unit)?
+    onToggleActive: () -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(14.dp),
@@ -186,9 +159,6 @@ fun UserPrivilegeCard(
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            onResetPassword?.let { reset ->
-                TextButton(onClick = reset) { Text("Atur kata sandi") }
-            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -284,20 +254,18 @@ fun UserPrivilegeCard(
 @Composable
 fun AddUserDialog(
     onDismiss: () -> Unit,
-    onSave: (String, String, String, String, String, String, (String?) -> Unit) -> Unit
+    onSave: (String, String, String, String, (String?) -> Unit) -> Unit
 ) {
     var namaInput by remember { mutableStateOf("") }
     var nipInput by remember { mutableStateOf("") }
     var jabatanInput by remember { mutableStateOf("") }
     var tipeSelected by remember { mutableStateOf("PNS") }
-    var roleSelected by remember { mutableStateOf("USER") }
-    var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Tambah Pegawai / Akses Baru", fontWeight = FontWeight.Bold) },
+        title = { Text("Tambah Pegawai Baru", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
@@ -332,33 +300,14 @@ fun AddUserDialog(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = roleSelected == "USER",
-                        onClick = { roleSelected = "USER" },
-                        label = { Text("USER") }
-                    )
-                    FilterChip(
-                        selected = roleSelected == "ADMIN",
-                        onClick = { roleSelected = "ADMIN" },
-                        label = { Text("ADMIN") }
-                    )
-                }
-
-                // Pegawai biasa (USER) tidak butuh kata sandi karena absensi tidak memerlukan
-                // login. Kata sandi hanya diperlukan untuk akun ADMIN yang membuka Monitoring,
-                // Hak Akses, dan Pengaturan (termasuk mode pembatasan waktu finger).
-                if (roleSelected == "ADMIN") {
-                    OutlinedTextField(value = password, onValueChange = { password = it },
-                        label = { Text("Kata sandi admin (minimal 8 karakter)") }, singleLine = true,
-                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation())
-                } else {
-                    Text(
-                        text = "Pegawai USER tidak memerlukan kata sandi — absensi dilakukan tanpa login.",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                // Pegawai selalu ditambahkan sebagai USER: absensi tidak memerlukan login,
+                // dan akun ADMIN tidak lagi bisa dibuat dari dalam aplikasi -- admin diatur
+                // hanya di server (lihat backend/Code.gs, fungsi setupAdminAccount).
+                Text(
+                    text = "Pegawai tidak memerlukan kata sandi — absensi dilakukan tanpa login.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
@@ -366,14 +315,13 @@ fun AddUserDialog(
             Button(
                 enabled = !saving,
                 onClick = {
-                    if (namaInput.isNotBlank() && nipInput.isNotBlank() &&
-                        (roleSelected != "ADMIN" || password.length >= 8)) {
+                    if (namaInput.isNotBlank() && nipInput.isNotBlank()) {
                         saving = true
-                        onSave(namaInput, nipInput, jabatanInput, tipeSelected, roleSelected, password) {
+                        onSave(namaInput, nipInput, jabatanInput, tipeSelected) {
                             error = it; saving = false
                         }
-                    } else if (roleSelected == "ADMIN") {
-                        error = "Kata sandi admin minimal 8 karakter"
+                    } else {
+                        error = "Lengkapi nama dan NIP"
                     }
                 }
             ) {
