@@ -30,6 +30,7 @@ function doPost(e) {
     // and does not touch the spreadsheet, so it is handled before the SYNC_TOKEN/lock logic
     // below, which exists only for the attendance-sync payload.
     if (data && data.action === 'adminLogin') return handleAdminLogin(data);
+    if (data && data.action === 'setScheduleMode') return handleSetScheduleMode(data);
     var props = PropertiesService.getScriptProperties();
     var token = props.getProperty('SYNC_TOKEN');
     if (!token || data.token !== token) return reply({ success: false, error: 'Unauthorized' });
@@ -114,6 +115,8 @@ function doGet(e) {
     var token = props.getProperty('SYNC_TOKEN');
     var requestToken = e && e.parameter ? e.parameter.token : null;
     if (!token || requestToken !== token) return reply({ success: false, error: 'Unauthorized' });
+    // Shared, server-side schedule mode: every device reads this instead of its own local copy.
+    if (action === 'settings') return reply({ success: true, scheduleMode: _readScheduleMode() });
     var book = SpreadsheetApp.openById(props.getProperty('SPREADSHEET_ID'));
     var sheet = book.getSheetByName('Absensi');
     if (!sheet || sheet.getLastRow() < 2) return reply({ success: true, records: [] });
@@ -248,16 +251,16 @@ function _clearLoginFailures(cache, key) {
  *  because the admin password itself is the credential (and unlike SYNC_TOKEN, it is never
  *  baked into the APK). Rate-limited per-NIP and globally via the shared script cache so a
  *  compromised or malicious client cannot brute-force it online either. */
-function handleAdminLogin(data) {
+function _verifyAdminCredentials(data) {
   var nip = String(data.nip || '').trim();
   var password = String(data.password || '');
   if (!nip || nip.length > 32 || !password || password.length > 200) {
-    return reply({ success: false, error: 'NIP dan kata sandi admin wajib diisi' });
+    return { error: 'NIP dan kata sandi admin wajib diisi' };
   }
 
   var cache = CacheService.getScriptCache();
   if (_isRateLimited(cache, 'adminlogin_global') || _isRateLimited(cache, 'adminlogin_nip_' + nip)) {
-    return reply({ success: false, error: 'Terlalu banyak percobaan. Coba lagi beberapa menit lagi.' });
+    return { error: 'Terlalu banyak percobaan. Coba lagi beberapa menit lagi.' };
   }
 
   var props = PropertiesService.getScriptProperties();
@@ -275,10 +278,38 @@ function handleAdminLogin(data) {
   if (!ok) {
     _recordLoginFailure(cache, 'adminlogin_global', ADMIN_LOGIN_MAX_FAILS_GLOBAL, ADMIN_LOGIN_LOCK_SECONDS_GLOBAL, ADMIN_LOGIN_FAIL_WINDOW_SECONDS);
     _recordLoginFailure(cache, 'adminlogin_nip_' + nip, ADMIN_LOGIN_MAX_FAILS_PER_NIP, ADMIN_LOGIN_LOCK_SECONDS_PER_NIP, ADMIN_LOGIN_FAIL_WINDOW_SECONDS);
-    return reply({ success: false, error: 'NIP atau kata sandi admin tidak sesuai' });
+    return { error: 'NIP atau kata sandi admin tidak sesuai' };
   }
   _clearLoginFailures(cache, 'adminlogin_nip_' + nip);
-  return reply({ success: true, nip: account.nip, name: account.name || 'Administrator' });
+  return { account: account };
+}
+
+function handleAdminLogin(data) {
+  var result = _verifyAdminCredentials(data);
+  if (result.error) return reply({ success: false, error: result.error });
+  return reply({ success: true, nip: result.account.nip, name: result.account.name || 'Administrator' });
+}
+
+// ---- Shared schedule mode ---------------------------------------------------------------------
+// Stored once in Script Properties so EVERY device sees the same mode. Previously this lived
+// only in each phone's local SharedPreferences, so "Buka Jadwal" only affected the admin's
+// own device. Writing requires admin NIP+password (same checks and rate limits as login).
+var VALID_SCHEDULE_MODES = ['AUTOMATIC', 'FORCE_OPEN', 'FORCE_LOCKED'];
+
+function _readScheduleMode() {
+  var value = PropertiesService.getScriptProperties().getProperty('SCHEDULE_MODE');
+  return VALID_SCHEDULE_MODES.indexOf(value) >= 0 ? value : 'AUTOMATIC';
+}
+
+/** POST { action: "setScheduleMode", nip, password, mode } */
+function handleSetScheduleMode(data) {
+  if (VALID_SCHEDULE_MODES.indexOf(data.mode) < 0) {
+    return reply({ success: false, error: 'Mode jadwal tidak valid' });
+  }
+  var result = _verifyAdminCredentials(data);
+  if (result.error) return reply({ success: false, error: result.error });
+  PropertiesService.getScriptProperties().setProperty('SCHEDULE_MODE', data.mode);
+  return reply({ success: true, scheduleMode: data.mode });
 }
 
 /** Run this manually from the Apps Script editor (pick "setupAdminAccount" in the function

@@ -241,3 +241,42 @@ test('attendance sync (doPost with a token) is unaffected by the adminLogin bran
   const f = fixture();
   assert.deepEqual(f.withoutServerTime(f.post(f.payload)), { success: true, recordId: f.payload.recordId });
 });
+
+function fixtureWithAdmin() {
+  const f = fixture();
+  const hash = f.context.hashAdminPassword('kata-sandi-kuat-1');
+  f.properties.ADMIN_ACCOUNTS = JSON.stringify([{ nip: '111', name: 'Admin', hash: hash }]);
+  return f;
+}
+const setMode = (f, mode, nip = '111', password = 'kata-sandi-kuat-1') =>
+  f.post({ action: 'setScheduleMode', nip, password, mode });
+
+test('schedule mode defaults to AUTOMATIC for every device until an admin changes it', () => {
+  const f = fixtureWithAdmin();
+  const result = f.withoutServerTime(f.get('test-secret', { action: 'settings' }));
+  assert.deepEqual(result, { success: true, scheduleMode: 'AUTOMATIC' });
+});
+
+test('admin-set schedule mode is stored server-side and read back by any other device', () => {
+  const f = fixtureWithAdmin();
+  assert.equal(setMode(f, 'FORCE_OPEN').success, true);
+  // A different device only has the sync token, no admin credentials:
+  const seenByOtherDevice = f.get('test-secret', { action: 'settings' });
+  assert.equal(seenByOtherDevice.scheduleMode, 'FORCE_OPEN');
+  assert.equal(setMode(f, 'FORCE_LOCKED').success, true);
+  assert.equal(f.get('test-secret', { action: 'settings' }).scheduleMode, 'FORCE_LOCKED');
+});
+
+test('setting the schedule mode requires valid admin credentials and a valid mode', () => {
+  const f = fixtureWithAdmin();
+  assert.equal(setMode(f, 'FORCE_OPEN', '111', 'salah').success, false);
+  assert.equal(setMode(f, 'FORCE_OPEN', '999').success, false);
+  assert.equal(setMode(f, 'BEBAS').success, false);
+  assert.equal(f.get('test-secret', { action: 'settings' }).scheduleMode, 'AUTOMATIC');
+});
+
+test('reading schedule settings requires the sync token', () => {
+  const f = fixtureWithAdmin();
+  assert.equal(f.get('salah', { action: 'settings' }).success, false);
+  assert.equal(f.get(undefined, { action: 'settings' }).success, false);
+});
