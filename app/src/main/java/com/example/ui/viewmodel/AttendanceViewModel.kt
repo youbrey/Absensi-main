@@ -13,6 +13,7 @@ import com.example.ui.components.ScheduleMode
 import com.example.util.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -69,6 +70,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // identity now lives entirely on the server (see loginAdmin below), so there is not
     // necessarily any local UserEntity row corresponding to it.
     private var authenticatedAdminNip: String? = null
+    // Kept in memory only (never persisted) so the admin can publish the shared schedule mode;
+    // the server re-verifies it on every change. Cleared on logout.
+    private var authenticatedAdminPassword: String? = null
     private var failedLoginAttempts = 0
     private var loginBlockedUntil = 0L
 
@@ -95,12 +99,38 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
         NotificationHelper.scheduleReminders(application, pushNotificationsEnabled.value)
         refreshGpsLocation()
+        // The schedule mode is shared via the server, so every device keeps polling it.
+        viewModelScope.launch {
+            while (true) {
+                refreshScheduleMode()
+                delay(60_000)
+            }
+        }
+    }
+
+    private fun applyScheduleMode(mode: ScheduleMode) {
+        _scheduleMode.value = mode
+        prefs.edit().putString("schedule_mode", mode.name).apply()
+    }
+
+    /** Pulls the shared mode from the server; on failure the last known value stays in effect. */
+    private suspend fun refreshScheduleMode() {
+        val raw = GoogleSheetsManager.fetchScheduleMode() ?: return
+        runCatching { ScheduleMode.valueOf(raw) }.getOrNull()?.let { applyScheduleMode(it) }
     }
 
     fun setScheduleMode(mode: ScheduleMode) {
         check(_isAdminAuthenticated.value) { "Login admin diperlukan" }
-        _scheduleMode.value = mode
-        prefs.edit().putString("schedule_mode", mode.name).apply()
+        val nip = authenticatedAdminNip
+        val password = authenticatedAdminPassword
+        if (nip == null || password == null) { toast("Login admin diperlukan"); return }
+        // Publish to the server first: only then does it apply to every device, so only then
+        // is it shown as active here too.
+        viewModelScope.launch {
+            val error = GoogleSheetsManager.setScheduleMode(nip, password, mode.name)
+            if (error == null) applyScheduleMode(mode)
+            else toast("Gagal menyimpan jadwal ke server: $error")
+        }
     }
 
     fun saveWebhook(url: String, token: String): Boolean {
@@ -141,6 +171,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         is AdminLoginResult.Success -> {
                             recordLoginResult(true)
                             authenticatedAdminNip = result.nip
+                            authenticatedAdminPassword = password
                             _isAdminAuthenticated.value = true
                             null
                         }
@@ -163,6 +194,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     fun logoutAdmin() {
         authenticatedAdminNip = null
+        authenticatedAdminPassword = null
         _isAdminAuthenticated.value = false
         currentTab.value = 0
     }
@@ -218,6 +250,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 // rather than silently falling back to the spoofable system clock.
                 val now = TrustedTime.ensureFreshOrNull()
                     ?: throw IllegalStateException("Tidak dapat memverifikasi waktu perangkat. Sambungkan ke internet, lalu coba lagi.")
+                // Re-read the shared mode right before deciding, so a stale cache cannot let
+                // a submission through (or block one) after the admin changed it.
+                refreshScheduleMode()
                 val mode = _scheduleMode.value
                 val windowOpen = mode != ScheduleMode.FORCE_LOCKED &&
                     (mode == ScheduleMode.FORCE_OPEN || AttendancePolicy.window(now) == kind.removePrefix("ABSENSI "))
