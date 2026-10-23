@@ -224,4 +224,47 @@ object GoogleSheetsManager {
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) { null }
     }
+
+    /** Reads the schedule mode every device shares (doGet ?action=settings, needs the sync
+     *  token). Returns the raw mode name (AUTOMATIC / FORCE_OPEN / FORCE_LOCKED) or null on
+     *  any failure, so callers keep their last known value instead of guessing. */
+    suspend fun fetchScheduleMode(): String? = withContext(Dispatchers.IO) {
+        val url = webhookUrl
+        val token = syncToken
+        if (!isValidWebhook(url) || token.isBlank()) return@withContext null
+        try {
+            val getUrl = url.toHttpUrlOrNull()?.newBuilder()
+                ?.addQueryParameter("action", "settings")?.addQueryParameter("token", token)?.build()
+                ?: return@withContext null
+            client.newCall(Request.Builder().url(getUrl).get().build()).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                captureServerTime(body)
+                if (!response.isSuccessful) return@use null
+                val json = JSONObject(body)
+                if (json.optBoolean("success")) json.optString("scheduleMode").takeIf { it.isNotBlank() } else null
+            }
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { null }
+    }
+
+    /** Publishes a new schedule mode for ALL devices. Authorised server-side with the admin's
+     *  NIP + password (same check and rate limit as adminLogin). Returns null on success,
+     *  otherwise a human-readable error. */
+    suspend fun setScheduleMode(nip: String, password: String, mode: String): String? = withContext(Dispatchers.IO) {
+        val url = webhookUrl
+        if (!isValidWebhook(url)) return@withContext "URL server belum dikonfigurasi"
+        try {
+            val body = JSONObject().apply {
+                put("action", "setScheduleMode"); put("nip", nip); put("password", password); put("mode", mode)
+            }.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+            client.newCall(Request.Builder().url(url).post(body).build()).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                captureServerTime(text)
+                if (!response.isSuccessful) return@use "HTTP ${response.code}"
+                val json = JSONObject(text)
+                if (json.optBoolean("success")) null else json.optString("error", "Ditolak server")
+            }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { "${e.javaClass.simpleName}: ${e.message}" }
+    }
 }
